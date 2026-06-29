@@ -72,8 +72,9 @@ def parse_aadhaar(raw_text: str) -> dict:
     Extracts:
       - AADHAAR.NO: 12-digit number (may be spaced as XXXX XXXX XXXX)
       - VILLAGE: from 'VTC: <village>' or best-guess from address lines
+      - MOBILE.NO: 10-digit mobile number
     """
-    fields = {"AADHAAR.NO": "", "VILLAGE": ""}
+    fields = {"AADHAAR.NO": "", "VILLAGE": "", "MOBILE.NO": ""}
 
     lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
 
@@ -82,8 +83,22 @@ def parse_aadhaar(raw_text: str) -> dict:
         if not fields["AADHAAR.NO"]:
             aadhaar_match = re.search(r"\b(\d{4}\s?\d{4}\s?\d{4})\b", line)
             if aadhaar_match:
-                # Normalize: remove spaces
                 fields["AADHAAR.NO"] = aadhaar_match.group(1).replace(" ", "")
+
+        # MOBILE.NO: 10-digit number, optionally after 'Mobile' or 'Mob' label
+        if not fields["MOBILE.NO"]:
+            # Try labeled first: "Mobile: 9876543210"
+            mob_match = re.search(r"(?:mobile|mob|ph|phone)\s*[:\-]?\s*(\d{10})", line, re.IGNORECASE)
+            if mob_match:
+                fields["MOBILE.NO"] = mob_match.group(1)
+            else:
+                # Standalone 10-digit number starting with 6,7,8,9 (Indian mobile)
+                standalone = re.search(r"\b([6-9]\d{9})\b", line)
+                if standalone:
+                    # Make sure it's not part of Aadhaar number
+                    num = standalone.group(1)
+                    if num not in fields["AADHAAR.NO"]:
+                        fields["MOBILE.NO"] = num
 
         # VILLAGE: explicit VTC label
         if not fields["VILLAGE"]:
@@ -92,16 +107,12 @@ def parse_aadhaar(raw_text: str) -> dict:
                 fields["VILLAGE"] = vtc_match.group(1).strip().rstrip(",")
 
     # If no VTC found, try to find village from address area
-    # Aadhaar address is usually in the middle of the card
-    # Look for a line that looks like a place name (not a number, not too long)
     if not fields["VILLAGE"]:
         for line in lines:
-            # Skip lines with digits (pincode, aadhaar no), skip very long lines
             if re.search(r"\d", line):
                 continue
             if len(line) > 40 or len(line) < 3:
                 continue
-            # Skip common non-village words
             skip = ["india", "government", "aadhaar", "आधार", "male", "female",
                     "dob", "जन्म", "year", "uid", "भारत"]
             if any(s in line.lower() for s in skip):

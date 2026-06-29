@@ -153,9 +153,9 @@ class OCRApp(tk.Tk):
             row = tk.Frame(area, bg=SURFACE, pady=4)
             row.pack(fill="x")
 
-            is_manual = field == "MOBILE.NO"
-            suffix = " ✏️" if is_manual else ""
-            label_color = ACCENT2 if is_manual else TEXT
+            is_manual = False
+            suffix = ""
+            label_color = TEXT
 
             tk.Label(row, text=field + suffix, font=FONT_LABEL, bg=SURFACE,
                      fg=label_color, width=14, anchor="w").pack(side="left")
@@ -267,7 +267,7 @@ class OCRApp(tk.Tk):
             fields, _ = process_aadhaar(path)
             self.after(0, lambda: self._merge_fields(fields))
             self.after(0, lambda: self._set_status(
-                "✅ Aadhaar read! Enter Mobile No. and save.", SUCCESS))
+                "✅ Aadhaar read! Review fields and save.", SUCCESS))
         except Exception as e:
             self.after(0, lambda: self._set_status(f"Aadhaar OCR error: {e}", ERROR))
 
