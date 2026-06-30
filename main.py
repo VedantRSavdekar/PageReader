@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 import threading
 import os
 import sys
@@ -8,12 +8,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from ocr import process_letter, process_aadhaar
 from excel import save_record, get_next_sr_no, set_start_sr_no
+from villages import get_villages, add_village
 
 try:
     import cv2
     WEBCAM_AVAILABLE = True
 except ImportError:
     WEBCAM_AVAILABLE = False
+
+try:
+    from tkcalendar import DateEntry
+    CALENDAR_AVAILABLE = True
+except ImportError:
+    CALENDAR_AVAILABLE = False
 
 # ── Theme ──────────────────────────────────────────────────────────────────
 BG      = "#1E1E2E"
@@ -34,11 +41,12 @@ FONT_SMALL = ("Segoe UI", 8)
 
 FIELDS = ["NAME", "VILLAGE", "MOBILE.NO", "AADHAAR.NO", "AP.DATE", "CENTER"]
 
-# Validation rules: field -> required exact digit length (None = no check)
 FIELD_LENGTHS = {
     "MOBILE.NO":   10,
     "AADHAAR.NO":  12,
 }
+
+CENTER_OPTIONS = ["Dharangaon", "Jalgaon", "Yawal"]
 
 
 class OCRApp(tk.Tk):
@@ -47,25 +55,26 @@ class OCRApp(tk.Tk):
         self.title("PageReader")
         self.configure(bg=BG)
         self.resizable(True, True)
-        self.minsize(860, 660)
+        self.minsize(880, 700)
 
-        self.field_vars   = {f: tk.StringVar() for f in FIELDS}
-        self.field_entries = {}  # store Entry widgets for border highlighting
-        self.status_var   = tk.StringVar(value="Set starting SR.NO then load the printed letter.")
-        self.sr_var       = tk.StringVar(value=f"Next SR.NO: {get_next_sr_no()}")
-        self.start_sr_var = tk.StringVar(value="1")
+        self.field_vars    = {f: tk.StringVar() for f in FIELDS}
+        self.field_entries = {}
+        self.field_locked  = {f: tk.BooleanVar(value=False) for f in FIELDS}
+        self.status_var    = tk.StringVar(value="Set starting SR.NO then load the printed letter.")
+        self.sr_var        = tk.StringVar(value=f"Next SR.NO: {get_next_sr_no()}")
+        self.start_sr_var  = tk.StringVar(value="1")
 
-        # Trace changes on MOBILE.NO and AADHAAR.NO for live validation
+        self.last_used_date = ""  # remembers the most recently saved AP.DATE
+
         self.field_vars["MOBILE.NO"].trace_add("write", lambda *_: self._validate_field("MOBILE.NO"))
         self.field_vars["AADHAAR.NO"].trace_add("write", lambda *_: self._validate_field("AADHAAR.NO"))
 
         self._build_ui()
-        self.geometry("960x720")
+        self.geometry("980x760")
 
     # ── UI ─────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # Header
         hdr = tk.Frame(self, bg=ACCENT, pady=12)
         hdr.pack(fill="x")
         tk.Label(hdr, text="📋  PageReader", font=FONT_TITLE,
@@ -73,7 +82,6 @@ class OCRApp(tk.Tk):
         tk.Label(hdr, textvariable=self.sr_var, font=FONT_BODY,
                  bg=ACCENT, fg=ACCENT2).pack(side="right", padx=20)
 
-        # SR.NO config bar
         sr_bar = tk.Frame(self, bg=SURFACE, pady=8,
                           highlightbackground=BORDER, highlightthickness=1)
         sr_bar.pack(fill="x", padx=0)
@@ -89,11 +97,9 @@ class OCRApp(tk.Tk):
         tk.Label(sr_bar, text="(Set once before saving first record)",
                  font=FONT_SMALL, bg=SURFACE, fg=MUTED).pack(side="left")
 
-        # Main
         main = tk.Frame(self, bg=BG, padx=16, pady=12)
         main.pack(fill="both", expand=True)
 
-        # Left: two image panels
         left = tk.Frame(main, bg=BG)
         left.pack(side="left", fill="both", expand=True, padx=(0, 12))
 
@@ -105,13 +111,11 @@ class OCRApp(tk.Tk):
                                "aadhaar", BLUE,
                                self._load_aadhaar, "Load Aadhaar")
 
-        # Right: fields panel
         right = tk.Frame(main, bg=SURFACE,
                          highlightbackground=BORDER, highlightthickness=1)
         right.pack(side="right", fill="both", expand=True)
         self._build_fields_panel(right)
 
-        # Status bar
         sb = tk.Frame(self, bg=SURFACE, pady=6,
                       highlightbackground=BORDER, highlightthickness=1)
         sb.pack(fill="x", side="bottom")
@@ -138,7 +142,7 @@ class OCRApp(tk.Tk):
             side="left", fill="x", expand=True)
 
         if WEBCAM_AVAILABLE:
-            self._btn(btn_row, "📷", lambda k=key: self._capture_webcam(k),
+            self._btn(btn_row, "📷  Webcam", lambda k=key: self._capture_webcam(k),
                       "#555577").pack(side="left", padx=(6, 0))
 
     def _build_fields_panel(self, parent):
@@ -153,22 +157,45 @@ class OCRApp(tk.Tk):
             row = tk.Frame(area, bg=SURFACE, pady=4)
             row.pack(fill="x")
 
-            is_manual = False
-            suffix = ""
-            label_color = TEXT
+            tk.Label(row, text=field, font=FONT_LABEL, bg=SURFACE,
+                     fg=TEXT, width=14, anchor="w").pack(side="left")
 
-            tk.Label(row, text=field + suffix, font=FONT_LABEL, bg=SURFACE,
-                     fg=label_color, width=14, anchor="w").pack(side="left")
+            if field == "CENTER":
+                widget = ttk.Combobox(row, textvariable=self.field_vars[field],
+                                      values=CENTER_OPTIONS, font=FONT_BODY,
+                                      state="readonly")
+                widget.pack(side="left", fill="x", expand=True, ipady=2, padx=(6, 0))
+            elif field == "VILLAGE":
+                widget = ttk.Combobox(row, textvariable=self.field_vars[field],
+                                      values=get_villages(), font=FONT_BODY,
+                                      state="normal")  # editable + selectable
+                widget.pack(side="left", fill="x", expand=True, ipady=2, padx=(6, 0))
+            elif field == "AP.DATE" and CALENDAR_AVAILABLE:
+                widget = DateEntry(row, textvariable=self.field_vars[field],
+                                   font=FONT_BODY, date_pattern="dd-mm-yyyy",
+                                   background=ACCENT, foreground="white",
+                                   borderwidth=1, width=12)
+                widget.pack(side="left", ipady=2, padx=(6, 0))
+            else:
+                widget = tk.Entry(row, textvariable=self.field_vars[field],
+                                  font=FONT_BODY, bg="#12121E", fg=TEXT,
+                                  insertbackground=TEXT, relief="flat",
+                                  highlightbackground=BORDER, highlightthickness=1)
+                widget.pack(side="left", fill="x", expand=True, ipady=4, padx=(6, 0))
 
-            entry = tk.Entry(row, textvariable=self.field_vars[field],
-                             font=FONT_BODY, bg="#12121E", fg=TEXT,
-                             insertbackground=TEXT, relief="flat",
-                             highlightbackground=BORDER, highlightthickness=1)
-            entry.pack(side="left", fill="x", expand=True, ipady=4, padx=(6, 0))
-            self.field_entries[field] = entry
+            self.field_entries[field] = widget
 
-        tk.Label(area, text="✏️ = enter manually", font=FONT_SMALL,
-                 bg=SURFACE, fg=MUTED).pack(anchor="w", pady=(4, 0))
+            lock_btn = tk.Checkbutton(row, variable=self.field_locked[field],
+                                      onvalue=True, offvalue=False,
+                                      bg=SURFACE, fg=ACCENT2,
+                                      activebackground=SURFACE,
+                                      selectcolor="#12121E",
+                                      text="🔒", font=FONT_SMALL,
+                                      command=lambda f=field: self._toggle_lock(f))
+            lock_btn.pack(side="left", padx=(4, 0))
+
+        tk.Label(area, text="🔒 = lock field (won't be overwritten on reload)",
+                 font=FONT_SMALL, bg=SURFACE, fg=MUTED).pack(anchor="w", pady=(4, 0))
 
         tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=16, pady=(8, 0))
 
@@ -177,6 +204,13 @@ class OCRApp(tk.Tk):
         self._btn(actions, "✅  Save to Excel", self._save_record, SUCCESS).pack(
             fill="x", pady=(0, 6))
         self._btn(actions, "🗑  Clear All", self._clear_fields, MUTED).pack(fill="x")
+
+        # Set default AP.DATE to last used date, if any
+        if self.last_used_date and CALENDAR_AVAILABLE:
+            try:
+                self.field_entries["AP.DATE"].set_date(self.last_used_date)
+            except Exception:
+                pass
 
     def _btn(self, parent, text, cmd, color):
         return tk.Button(parent, text=text, command=cmd,
@@ -201,7 +235,6 @@ class OCRApp(tk.Tk):
     # ── Validation ─────────────────────────────────────────────────────────
 
     def _validate_field(self, field: str) -> bool:
-        """Check digit length. Highlight border red if invalid, green if valid."""
         required_len = FIELD_LENGTHS.get(field)
         if required_len is None:
             return True
@@ -212,19 +245,20 @@ class OCRApp(tk.Tk):
         if not entry:
             return True
 
-        if value == "":
-            # Empty — reset to neutral
-            entry.configure(highlightbackground=BORDER)
+        try:
+            if value == "":
+                entry.configure(highlightbackground=BORDER)
+                return True
+            elif len(digits_only) == required_len:
+                entry.configure(highlightbackground=SUCCESS)
+                return True
+            else:
+                entry.configure(highlightbackground=ERROR)
+                return False
+        except tk.TclError:
             return True
-        elif len(digits_only) == required_len:
-            entry.configure(highlightbackground=SUCCESS)
-            return True
-        else:
-            entry.configure(highlightbackground=ERROR)
-            return False
 
     def _validate_all(self) -> bool:
-        """Validate all fields with length rules. Returns True if all pass."""
         all_valid = True
         for field in FIELD_LENGTHS:
             if not self._validate_field(field):
@@ -271,38 +305,65 @@ class OCRApp(tk.Tk):
         except Exception as e:
             self.after(0, lambda: self._set_status(f"Aadhaar OCR error: {e}", ERROR))
 
+    # ── Webcam (button-based capture, no keyboard needed) ───────────────────
+
     def _capture_webcam(self, key):
         if not WEBCAM_AVAILABLE:
             return
-        self._set_status("Webcam open — SPACE to capture, ESC to cancel.", MUTED)
-        threading.Thread(target=self._webcam_thread, args=(key,), daemon=True).start()
+        win = tk.Toplevel(self)
+        win.title(f"Capture {key.title()}")
+        win.configure(bg=BG)
 
-    def _webcam_thread(self, key):
+        video_label = tk.Label(win, bg=BG)
+        video_label.pack(padx=10, pady=10)
+
+        btn_row = tk.Frame(win, bg=BG)
+        btn_row.pack(pady=(0, 10))
+
+        state = {"running": True, "frame": None}
+
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
-            self.after(0, lambda: self._set_status("Could not open webcam.", ERROR))
+            self._set_status("Could not open webcam.", ERROR)
+            win.destroy()
             return
-        save_path = os.path.join(os.path.dirname(__file__), "output", f"{key}_capture.jpg")
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        captured = False
-        while True:
+
+        def update_frame():
+            if not state["running"]:
+                return
             ret, frame = cap.read()
-            if not ret:
-                break
-            cv2.imshow(f"Capture {key} — SPACE to snap, ESC to cancel", frame)
-            k = cv2.waitKey(1) & 0xFF
-            if k == 32:
-                cv2.imwrite(save_path, frame)
-                captured = True
-                break
-            elif k == 27:
-                break
-        cap.release()
-        cv2.destroyAllWindows()
-        if captured:
-            self.after(0, lambda: self._show_preview(key, save_path))
-            fn = self._run_letter_ocr if key == "letter" else self._run_aadhaar_ocr
-            threading.Thread(target=fn, args=(save_path,), daemon=True).start()
+            if ret:
+                state["frame"] = frame
+                from PIL import Image, ImageTk
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(rgb)
+                img.thumbnail((480, 360))
+                photo = ImageTk.PhotoImage(img)
+                video_label.configure(image=photo)
+                video_label.image = photo
+            win.after(30, update_frame)
+
+        def do_capture():
+            if state["frame"] is not None:
+                save_path = os.path.join(os.path.dirname(__file__), "output", f"{key}_capture.jpg")
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                cv2.imwrite(save_path, state["frame"])
+                close_and_process(save_path)
+
+        def close_and_process(save_path=None):
+            state["running"] = False
+            cap.release()
+            win.destroy()
+            if save_path:
+                self._show_preview(key, save_path)
+                fn = self._run_letter_ocr if key == "letter" else self._run_aadhaar_ocr
+                threading.Thread(target=fn, args=(save_path,), daemon=True).start()
+
+        self._btn(btn_row, "📸  Capture", do_capture, SUCCESS).pack(side="left", padx=6)
+        self._btn(btn_row, "✖  Cancel", lambda: close_and_process(None), ERROR).pack(side="left", padx=6)
+
+        win.protocol("WM_DELETE_WINDOW", lambda: close_and_process(None))
+        update_frame()
 
     def _show_preview(self, key, path):
         lbl = getattr(self, f"{key}_label")
@@ -316,10 +377,36 @@ class OCRApp(tk.Tk):
         except Exception:
             lbl.configure(text=os.path.basename(path))
 
+    def _toggle_lock(self, field):
+        locked = self.field_locked[field].get()
+        widget = self.field_entries.get(field)
+        if widget:
+            try:
+                if locked:
+                    widget.configure(state="disabled")
+                    self._set_status(f"🔒 {field} locked.", MUTED)
+                else:
+                    state = "readonly" if field == "CENTER" else "normal"
+                    widget.configure(state=state)
+                    self._set_status(f"🔓 {field} unlocked.", MUTED)
+            except tk.TclError:
+                pass
+
     def _merge_fields(self, fields: dict):
         for key, value in fields.items():
-            if value and key in self.field_vars:
+            if value and key in self.field_vars and not self.field_locked[key].get():
                 self.field_vars[key].set(value)
+        # If a new village came in via OCR, refresh the dropdown list live
+        if fields.get("VILLAGE"):
+            self._refresh_village_list()
+
+    def _refresh_village_list(self):
+        widget = self.field_entries.get("VILLAGE")
+        if widget is not None:
+            try:
+                widget.configure(values=get_villages())
+            except tk.TclError:
+                pass
 
     def _save_record(self):
         fields = {f: self.field_vars[f].get().strip() for f in FIELDS}
@@ -334,6 +421,10 @@ class OCRApp(tk.Tk):
 
         try:
             sr_no = save_record(fields)
+            self.last_used_date = fields["AP.DATE"]  # remember for next entry
+            if fields["VILLAGE"]:
+                add_village(fields["VILLAGE"])
+                self._refresh_village_list()
             self._set_status(f"✅ Saved as SR.NO {sr_no}. Ready for next entry.", SUCCESS)
             self.sr_var.set(f"Next SR.NO: {get_next_sr_no()}")
             self._clear_fields()
@@ -341,10 +432,28 @@ class OCRApp(tk.Tk):
             self._set_status(f"Save error: {e}", ERROR)
 
     def _clear_fields(self):
-        for var in self.field_vars.values():
-            var.set("")
-        for entry in self.field_entries.values():
-            entry.configure(highlightbackground=BORDER)
+        for field, var in self.field_vars.items():
+            if field == "AP.DATE" and self.last_used_date:
+                var.set(self.last_used_date)
+            else:
+                var.set("")
+        for field, widget in self.field_entries.items():
+            try:
+                if field == "CENTER":
+                    widget.configure(state="readonly", highlightbackground=BORDER)
+                elif field == "VILLAGE":
+                    widget.configure(state="normal")
+                else:
+                    widget.configure(state="normal")
+                    if hasattr(widget, "configure"):
+                        try:
+                            widget.configure(highlightbackground=BORDER)
+                        except tk.TclError:
+                            pass
+            except tk.TclError:
+                pass
+        for var in self.field_locked.values():
+            var.set(False)
         for key in ("letter", "aadhaar"):
             lbl = getattr(self, f"{key}_label")
             lbl.configure(image="", text="No image loaded")

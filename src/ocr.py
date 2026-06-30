@@ -79,9 +79,10 @@ def parse_aadhaar(raw_text: str) -> dict:
     lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
 
     for i, line in enumerate(lines):
-        # AADHAAR.NO: 12 digits possibly separated by spaces
+        # AADHAAR.NO: strictly 12 digits (XXXX XXXX XXXX), ignore 16-digit VID
         if not fields["AADHAAR.NO"]:
-            aadhaar_match = re.search(r"\b(\d{4}\s?\d{4}\s?\d{4})\b", line)
+            # Must be exactly 12 digits, not part of a longer number
+            aadhaar_match = re.search(r"(?<!\d)(\d{4}\s\d{4}\s\d{4})(?!\s?\d)", line)
             if aadhaar_match:
                 fields["AADHAAR.NO"] = aadhaar_match.group(1).replace(" ", "")
 
